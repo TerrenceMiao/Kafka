@@ -1,0 +1,183 @@
+Kafka First Try
+===============
+
+Check out Confluent all-in-one package:
+
+[source.console]
+----
+terrence@muffler ~/Projects/hackday/cp-docker-images/examples/cp-all-in-one (5.3.0-post ⚡☡=)
+𝜆 git diff
+diff --git a/examples/cp-all-in-one/docker-compose.yml b/examples/cp-all-in-one/docker-compose.yml
+index 780eaac..c7548e0 100644
+--- a/examples/cp-all-in-one/docker-compose.yml
++++ b/examples/cp-all-in-one/docker-compose.yml
+@@ -28,6 +28,7 @@ services:
+       KAFKA_METRIC_REPORTERS: io.confluent.metrics.reporter.ConfluentMetricsReporter
+       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
++      KAFKA_DELETE_TOPIC_ENABLE: 'true'
+       CONFLUENT_METRICS_REPORTER_BOOTSTRAP_SERVERS: broker:29092
+       CONFLUENT_METRICS_REPORTER_ZOOKEEPER_CONNECT: zookeeper:2181
+       CONFLUENT_METRICS_REPORTER_TOPIC_REPLICAS: 1
+----
+
+Start up Kafka containers:
+
+[source.console]
+----
+𝜆 docker-compose up -d --build
+𝜆 docker container ls -aq
+----
+
+Create Topics:
+
+[source.console]
+----
+𝜆 docker-compose exec broker kafka-topics --create --zookeeper zookeeper:2181 --replication-factor 1 --partitions 1 --topic pageviews
+𝜆 docker-compose exec broker kafka-topics --create --zookeeper zookeeper:2181 --replication-factor 1 --partitions 1 --topic users
+----
+
+Add connectors:
+
+[source.console]
+----
+𝜆 wget https://github.com/confluentinc/kafka-connect-datagen/raw/master/config/connector_pageviews_cos.config
+𝜆 curl -X POST -H "Content-Type: application/json" --data @connector_pageviews_cos.config http://localhost:8083/connectors
+
+𝜆 wget https://github.com/confluentinc/kafka-connect-datagen/raw/master/config/connector_users_cos.config
+𝜆 curl -X POST -H "Content-Type: application/json" --data @connector_users_cos.config http://localhost:8083/connectors
+----
+
+Connect KSQL:
+
+[source.console]
+----
+𝜆 docker-compose exec ksql-cli ksql http://ksql-server:8088
+
+                  ===========================================
+                  =        _  __ _____  ____  _             =
+                  =       | |/ // ____|/ __ \| |            =
+                  =       | ' /| (___ | |  | | |            =
+                  =       |  <  \___ \| |  | | |            =
+                  =       | . \ ____) | |__| | |____        =
+                  =       |_|\_\_____/ \___\_\______|       =
+                  =                                         =
+                  =  Streaming SQL Engine for Apache Kafka® =
+                  ===========================================
+
+Copyright 2017-2018 Confluent Inc.
+
+CLI v5.3.0, Server v5.3.0 located at http://ksql-server:8088
+
+Having trouble? Type 'help' (case-insensitive) for a rundown of how things work!
+
+ksql> CREATE STREAM pageviews_female AS SELECT users.userid AS userid, pageid, regionid, gender FROM pageviews LEFT JOIN users ON pageviews.userid = users.userid WHERE gender = 'FEMALE';
+
+ksql> CREATE STREAM pageviews_female_like_89 WITH (kafka_topic='pageviews_enriched_r8_r9', value_format='AVRO') AS SELECT * FROM pageviews_female WHERE regionid LIKE '%_8' OR regionid LIKE '%_9';
+ksql> DESCRIBE EXTENDED pageviews_female_like_89;
+
+ksql> CREATE TABLE pageviews_regions AS SELECT gender, regionid , COUNT(*) AS numusers FROM pageviews_female WINDOW TUMBLING (size 30 second) GROUP BY gender, regionid HAVING COUNT(*) > 1;
+
+ksql> CREATE STREAM pageviews (viewtime BIGINT, userid VARCHAR, pageid VARCHAR) WITH (KAFKA_TOPIC='pageviews', VALUE_FORMAT='AVRO');
+ksql> SHOW STREAMS; 
+ksql> select * from PAGEVIEWS;
+
+ksql> CREATE TABLE users (registertime BIGINT, gender VARCHAR, regionid VARCHAR, userid VARCHAR) WITH (KAFKA_TOPIC='users', VALUE_FORMAT='AVRO', KEY = 'userid');
+ksql> SHOW TABLES;
+ksql> select * from USERS;
+
+ksql> SET 'auto.offset.reset'='earliest';
+
+ksql> SELECT pageid FROM pageviews LIMIT 3;
+
+ksql> EXPLAIN CTAS_PAGEVIEWS_REGIONS_2;
+ksql> EXPLAIN CSAS_PAGEVIEWS_FEMALE_0;
+----
+
+Generate AVRO formatted Twitter event:
+
+[source.console]
+----
+𝜆 cat twitter.json
+{"username":"miguno","tweet":"Rock: Nerf paper, scissors is fine.","timestamp": 1366150681 }
+
+𝜆 cat twitter.avsc
+{
+  "type" : "record",
+  "name" : "twitter_schema",
+  "namespace" : "com.miguno.avro",
+  "fields" : [ {
+    "name" : "username",
+    "type" : "string",
+    "doc"  : "Name of the user account on Twitter.com"
+  }, {
+    "name" : "tweet",
+    "type" : "string",
+    "doc"  : "The content of the user's Twitter message"
+  }, {
+    "name" : "timestamp",
+    "type" : "long",
+    "doc"  : "Unix epoch time in seconds"
+  } ],
+  "doc:" : "A basic schema for storing Twitter messages"
+}
+
+𝜆 java -jar ~/bin/avro-tools-1.9.0.jar fromjson --schema-file twitter.avsc twitter.json > twitter.avro
+𝜆 java -jar ~/bin/avro-tools-1.9.0.jar fromjson --codec snappy --schema-file twitter.avsc twitter.json > twitter.snappy.avro
+𝜆 java -jar ~/bin/avro-tools-1.9.0.jar fromjson --codec deflate --schema-file twitter.avsc twitter.json > twitter.deflate.avro
+----
+
+Send Twitter event messages over Kafka:
+
+[source.console]
+----
+𝜆 docker-compose exec broker kafka-topics --create --zookeeper zookeeper:2181 --replication-factor 1 --partitions 1 --topic twitter
+
+𝜆 docker-compose exec broker kafka-topics --list --zookeeper zookeeper:2181
+
+𝜆 docker-compose exec broker kafka-topics --describe --topic twitter --zookeeper zookeeper:2181
+
+𝜆 docker-compose exec broker kafka-console-producer --request-required-acks 1 --broker-list broker:9092 --topic twitter
+𝜆 docker-compose exec broker kafka-console-consumer --bootstrap-server broker:9092 --topic twitter --from-beginning
+
+𝜆 docker-compose exec broker bash -c "seq 42 | kafka-console-producer --request-required-acks 1 --broker-list broker:9092 --topic twitter && echo '{\"username\":\"miguno\",\"tweet\":\"Rock: Nerf paper, scissors is fine.\",\"timestamp\":1366150681}'"
+𝜆 docker-compose exec broker kafka-console-consumer --bootstrap-server broker:9092 --topic twitter --from-beginning --max-messages 42
+
+𝜆 docker-compose exec broker kafka-topics --delete --zookeeper zookeeper:2181 --topic twitter
+----
+
+Send Twitter event AVRO formatted messages over Kafka:
+
+[source.console]
+----
+𝜆 docker-compose exec schema-registry kafka-avro-console-producer --broker-list broker:9092 --topic twitter --property value.schema='{"type":"record","name":"twitter_schema","namespace":"com.miguno.avro","fields":[{"name":"username","type":"string","doc":"Name of the user account on Twitter.com"},{"name":"tweet","type":"string","doc":"The content of the user's Twitter message"},{"name":"timestamp","type":"long","doc":"Unix epoch time in seconds"}],"doc:":"A basic schema for storing Twitter messages"}'
+
+𝜆 docker-compose exec schema-registry kafka-avro-console-consumer --bootstrap-server broker:9092 --topic twitter --property print.key=true
+----
+
+Create Twitter event STREAM in KSQL:
+
+[source.console]
+----
+ksql> CREATE STREAM twitter_stream (username VARCHAR, tweet VARCHAR, timestamp BIGINT) WITH (KAFKA_TOPIC='twitter', VALUE_FORMAT='JSON', KEY = 'username');
+
+ksql> TERMINATE CSAS_TWITTER_STREAM_0;
+
+ksql> DROP STREAM twitter_stream;
+----
+
+Shutdown Kafka container:
+
+[source.console]
+----
+𝜆 docker container stop (docker container ls -a -q -f "label=io.confluent.docker")
+
+𝜆 docker rm (docker ps -qa)
+----
+
+
+Referennces
+-----------
+
+- Confluent Platform Quick Start (Docker), _https://docs.confluent.io/current/quickstart/ce-docker-quickstart.html_
+- Quick Start using Community Components (Docker), _https://docs.confluent.io/current/quickstart/cos-docker-quickstart.html_
